@@ -44,6 +44,7 @@ import com.azure.storage.blob.models.BlobErrorCode;
 import com.azure.storage.blob.models.BlobItem;
 import com.azure.storage.blob.models.BlobItemProperties;
 import com.azure.storage.blob.models.BlobListDetails;
+import com.azure.storage.blob.models.BlobProperties;
 import com.azure.storage.blob.models.BlobRange;
 import com.azure.storage.blob.models.BlobRequestConditions;
 import com.azure.storage.blob.models.BlobStorageException;
@@ -285,6 +286,17 @@ public class AzureBlobStore implements BlobStore {
             } else {
                 return azureBlob.openInputStream(new BlobRange(position, length), null);
             }
+        });
+    }
+
+    public long getBlobLength(String blob) throws URISyntaxException, BlobStorageException {
+        final Tuple<BlobServiceClient, Supplier<Context>> client = client();
+        final BlobContainerClient blobContainer = client.v1().getBlobContainerClient(container);
+        return AccessController.doPrivileged(() -> {
+            final BlobProperties properties = blobContainer.getBlobClient(blob)
+                .getPropertiesWithResponse(null, timeout(), client.v2().get())
+                .getValue();
+            return properties.getBlobSize();
         });
     }
 
