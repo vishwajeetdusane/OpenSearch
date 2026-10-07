@@ -35,6 +35,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 import com.azure.storage.blob.BlobClient;
+import com.azure.storage.blob.models.BlobStorageException;
 import com.azure.storage.blob.models.ParallelTransferOptions;
 import com.azure.storage.common.policy.RequestRetryOptions;
 import com.azure.storage.common.policy.RetryPolicyType;
@@ -69,6 +70,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.URISyntaxException;
 import java.nio.file.NoSuchFileException;
 import java.util.Arrays;
 import java.util.Base64;
@@ -101,9 +103,12 @@ import static org.opensearch.repositories.blobstore.OpenSearchBlobStoreRepositor
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
+import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.lessThan;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * This class tests how a {@link AzureBlobContainer} and its underlying SDK client are retrying requests when reading or writing blobs.
@@ -193,6 +198,107 @@ public class AzureBlobContainerRetriesTests extends OpenSearchTestCase {
         );
 
         return new AzureBlobContainer(BlobPath.cleanPath(), new AzureBlobStore(repositoryMetadata, service, threadPool), threadPool);
+    }
+
+    public void testBlobExistsReturnsTrue() throws Exception {
+        httpServer.createContext("/container/exists", exchange -> {
+            assertEquals("HEAD", exchange.getRequestMethod());
+            exchange.getResponseHeaders().add("Content-Length", "1");
+            exchange.getResponseHeaders().add("x-ms-blob-type", "BlockBlob");
+            exchange.getResponseHeaders().add("x-ms-request-server-encrypted", "false");
+            exchange.sendResponseHeaders(RestStatus.OK.getStatus(), -1);
+            exchange.close();
+        });
+
+        assertTrue(createBlobContainer(1).blobExists("exists"));
+    }
+
+    public void testBlobExistsReturnsFalseOnlyForBlobNotFound() throws Exception {
+        httpServer.createContext("/container/missing-blob", exchange -> {
+            AzureHttpHandler.sendError(exchange, RestStatus.NOT_FOUND);
+            exchange.close();
+        });
+
+        final BlobContainer blobContainer = createBlobContainer(1);
+        assertFalse(blobContainer.blobExists("missing-blob"));
+    }
+
+    public void testBlobExistsDoesNotTreatOtherNotFoundCodesAsMissingBlob() {
+        httpServer.createContext("/container/missing-container", exchange -> sendAzureError(exchange, 404, "ContainerNotFound"));
+        httpServer.createContext("/container/missing-resource", exchange -> sendAzureError(exchange, 404, "ResourceNotFound"));
+
+        final BlobContainer blobContainer = createBlobContainer(1);
+        for (String blobName : List.of("missing-container", "missing-resource")) {
+            final IOException e = expectThrows(IOException.class, () -> blobContainer.blobExists(blobName));
+            assertThat(e.getCause(), instanceOf(BlobStorageException.class));
+            assertEquals(404, ((BlobStorageException) e.getCause()).getStatusCode());
+        }
+    }
+
+    public void testBlobExistsDoesNotTreatUnverifiedNotFoundAsMissingBlob() {
+        httpServer.createContext("/container/unverified-not-found", exchange -> {
+            exchange.sendResponseHeaders(404, -1);
+            exchange.close();
+        });
+
+        final IOException e = expectThrows(
+            IOException.class,
+            () -> createBlobContainer(1).blobExists("unverified-not-found")
+        );
+        assertThat(e.getCause(), instanceOf(BlobStorageException.class));
+        assertEquals(404, ((BlobStorageException) e.getCause()).getStatusCode());
+    }
+
+    public void testBlobExistsPropagatesNonNotFoundServiceFailures() {
+        final BlobContainer blobContainer = createBlobContainer(1);
+        final int[] statuses = new int[] { 401, 403, 408, 429, 500, 503 };
+        final String[] errorCodes = new String[] {
+            "AuthenticationFailed",
+            "AuthorizationFailure",
+            "OperationTimedOut",
+            "ServerBusy",
+            "InternalError",
+            "ServerBusy" };
+
+        for (int i = 0; i < statuses.length; i++) {
+            final String blobName = "failure-" + statuses[i];
+            final int status = statuses[i];
+            final String errorCode = errorCodes[i];
+            httpServer.createContext("/container/" + blobName, exchange -> sendAzureError(exchange, status, errorCode));
+
+            final IOException e = expectThrows(IOException.class, () -> blobContainer.blobExists(blobName));
+            assertThat(e.getCause(), instanceOf(BlobStorageException.class));
+            assertEquals(status, ((BlobStorageException) e.getCause()).getStatusCode());
+        }
+    }
+
+    public void testBlobExistsPropagatesTransportFailure() {
+        final AtomicInteger requests = new AtomicInteger();
+        httpServer.createContext("/container/transport-failure", exchange -> {
+            requests.incrementAndGet();
+            exchange.close();
+        });
+
+        expectThrows(RuntimeException.class, () -> createBlobContainer(1).blobExists("transport-failure"));
+        assertEquals(1, requests.get());
+    }
+
+    public void testBlobExistsMapsMalformedUriToIOException() throws Exception {
+        final AzureBlobStore blobStore = mock(AzureBlobStore.class);
+        when(blobStore.blobExists("malformed")).thenThrow(new URISyntaxException("malformed", "invalid URI"));
+        final AzureBlobContainer blobContainer = new AzureBlobContainer(BlobPath.cleanPath(), blobStore, mock(ThreadPool.class));
+
+        final IOException e = expectThrows(IOException.class, () -> blobContainer.blobExists("malformed"));
+        assertThat(e.getCause(), instanceOf(URISyntaxException.class));
+    }
+
+    public void testBlobExistsDoesNotSwallowUnexpectedException() throws Exception {
+        final AzureBlobStore blobStore = mock(AzureBlobStore.class);
+        final IllegalStateException failure = new IllegalStateException("unexpected");
+        when(blobStore.blobExists("unexpected")).thenThrow(failure);
+        final AzureBlobContainer blobContainer = new AzureBlobContainer(BlobPath.cleanPath(), blobStore, mock(ThreadPool.class));
+
+        assertSame(failure, expectThrows(IllegalStateException.class, () -> blobContainer.blobExists("unexpected")));
     }
 
     public void testReadNonexistentBlobThrowsNoSuchFileException() {
@@ -488,6 +594,13 @@ public class AzureBlobContainerRetriesTests extends OpenSearchTestCase {
             return Optional.empty();
         }
         return Optional.of(Math.toIntExact(rangeEnd));
+    }
+
+    private static void sendAzureError(HttpExchange exchange, int status, String errorCode) throws IOException {
+        exchange.getResponseHeaders().add("Content-Type", "application/xml");
+        exchange.getResponseHeaders().add("x-ms-error-code", errorCode);
+        exchange.sendResponseHeaders(status, -1);
+        exchange.close();
     }
 
 }
