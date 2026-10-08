@@ -403,6 +403,19 @@ public class AzureStorageServiceTests extends OpenSearchTestCase {
         }
     }
 
+    public void testPrimaryCasClientIsSharedAndRebuiltOnRefresh() throws IOException {
+        final Settings settings = buildSettings();
+        try (AzureStorageService service = storageServiceWithSettingsValidation(settings)) {
+            final BlobServiceClient versionedRead = service.clientForVersionedRead("azure1", (request, response) -> {}).v1();
+            final BlobServiceClient conditionalWrite = service.clientForConditionalWrite("azure1", (request, response) -> {}).v1();
+            assertSame(versionedRead, conditionalWrite);
+
+            service.refreshAndClearCache(AzureStorageSettings.load(settings));
+            final BlobServiceClient refreshed = service.clientForVersionedRead("azure1", (request, response) -> {}).v1();
+            assertNotSame(versionedRead, refreshed);
+        }
+    }
+
     public void testNoProxy() throws IOException {
         final Settings settings = Settings.builder().setSecureSettings(buildSecureSettings()).build();
         try (final AzureStorageService mock = storageServiceWithSettingsValidation(settings)) {

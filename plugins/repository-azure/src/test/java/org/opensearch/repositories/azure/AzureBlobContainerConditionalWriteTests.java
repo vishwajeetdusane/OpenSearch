@@ -50,7 +50,9 @@ import reactor.core.scheduler.Schedulers;
 import reactor.netty.http.HttpResources;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.opensearch.repositories.azure.AzureRepository.Repository.CLIENT_NAME;
 import static org.opensearch.repositories.azure.AzureRepository.Repository.CONTAINER_SETTING;
+import static org.opensearch.repositories.azure.AzureRepository.Repository.LOCATION_MODE_SETTING;
 import static org.opensearch.repositories.azure.AzureStorageSettings.ACCOUNT_SETTING;
 import static org.opensearch.repositories.azure.AzureStorageSettings.ENDPOINT_SUFFIX_SETTING;
 import static org.opensearch.repositories.azure.AzureStorageSettings.KEY_SETTING;
@@ -95,6 +97,86 @@ public class AzureBlobContainerConditionalWriteTests extends OpenSearchTestCase 
 
     public void testConditionalWriteSupported() {
         assertTrue(createBlobContainer(3).isConditionalWriteSupported());
+    }
+
+    public void testVersionedReadUsesOnlyPrimaryForAllLocationModes() throws Exception {
+        final byte[] content = randomByteArrayOfLength(randomIntBetween(1, 512));
+        final AtomicInteger primaryRequests = new AtomicInteger();
+        final AtomicInteger secondaryRequests = new AtomicInteger();
+        for (LocationMode locationMode : LocationMode.values()) {
+            closeCurrentService();
+            final String blobName = "versioned-" + locationMode;
+            httpServer.createContext("/container/" + blobName, exchange -> {
+                countEndpoint(exchange, primaryRequests, secondaryRequests);
+                sendDownload(exchange, content, quoted("etag"));
+            });
+
+            final VersionedBlob blob = createBlobContainer(3, locationMode).readBlobWithVersion(blobName);
+            assertArrayEquals(content, blob.content());
+            assertEquals("etag", blob.versionToken());
+        }
+        assertEquals(LocationMode.values().length, primaryRequests.get());
+        assertEquals(0, secondaryRequests.get());
+    }
+
+    public void testEmptyVersionedReadUsesOnlyPrimaryForAllLocationModes() throws Exception {
+        final AtomicInteger primaryRequests = new AtomicInteger();
+        final AtomicInteger secondaryRequests = new AtomicInteger();
+        for (LocationMode locationMode : LocationMode.values()) {
+            closeCurrentService();
+            final String blobName = "empty-" + locationMode;
+            httpServer.createContext("/container/" + blobName, exchange -> {
+                countEndpoint(exchange, primaryRequests, secondaryRequests);
+                if ("GET".equals(exchange.getRequestMethod())) {
+                    sendAzureError(exchange, 416, "InvalidRange");
+                } else if ("HEAD".equals(exchange.getRequestMethod())) {
+                    sendProperties(exchange, 0, quoted("empty-etag"));
+                } else {
+                    fail("unexpected method " + exchange.getRequestMethod());
+                }
+            });
+
+            final VersionedBlob blob = createBlobContainer(3, locationMode).readBlobWithVersion(blobName);
+            assertArrayEquals(new byte[0], blob.content());
+            assertEquals("empty-etag", blob.versionToken());
+        }
+        assertEquals(LocationMode.values().length * 2, primaryRequests.get());
+        assertEquals(0, secondaryRequests.get());
+    }
+
+    public void testVersionedReadPrimaryNotFoundNeverFallsBackToSecondary() throws Exception {
+        final AtomicInteger primaryRequests = new AtomicInteger();
+        final AtomicInteger secondaryRequests = new AtomicInteger();
+        for (LocationMode locationMode : LocationMode.values()) {
+            closeCurrentService();
+            final String blobName = "missing-" + locationMode;
+            httpServer.createContext("/container/" + blobName, exchange -> {
+                countEndpoint(exchange, primaryRequests, secondaryRequests);
+                sendAzureError(exchange, 404, "BlobNotFound");
+            });
+
+            expectThrows(NoSuchFileException.class, () -> createBlobContainer(3, locationMode).readBlobWithVersion(blobName));
+        }
+        assertEquals(LocationMode.values().length, primaryRequests.get());
+        assertEquals(0, secondaryRequests.get());
+    }
+
+    public void testVersionedReadPrimaryFailureNeverFallsBackToSecondary() throws Exception {
+        final AtomicInteger primaryRequests = new AtomicInteger();
+        final AtomicInteger secondaryRequests = new AtomicInteger();
+        for (LocationMode locationMode : LocationMode.values()) {
+            closeCurrentService();
+            final String blobName = "failure-" + locationMode;
+            httpServer.createContext("/container/" + blobName, exchange -> {
+                countEndpoint(exchange, primaryRequests, secondaryRequests);
+                sendAzureError(exchange, 503, "ServerBusy");
+            });
+
+            final IOException e = expectThrows(IOException.class, () -> createBlobContainer(3, locationMode).readBlobWithVersion(blobName));
+            assertFalse(e instanceof NoSuchFileException);
+        }
+        assertEquals(LocationMode.values().length, primaryRequests.get());
+        assertEquals(0, secondaryRequests.get());
     }
 
     public void testReadBlobWithVersionReturnsContentAndETag() throws Exception {
@@ -319,12 +401,18 @@ public class AzureBlobContainerConditionalWriteTests extends OpenSearchTestCase 
     }
 
     private BlobContainer createBlobContainer(int maxRetries) {
+        return createBlobContainer(maxRetries, LocationMode.PRIMARY_ONLY);
+    }
+
+    private BlobContainer createBlobContainer(int maxRetries, LocationMode locationMode) {
         final Settings.Builder clientSettings = Settings.builder();
         final String clientName = randomAlphaOfLength(5).toLowerCase(Locale.ROOT);
         final InetSocketAddress address = httpServer.getAddress();
         final String endpoint = "ignored;DefaultEndpointsProtocol=http;BlobEndpoint=http://"
             + InetAddresses.toUriString(address.getAddress())
             + ":"
+            + address.getPort()
+            + "/;BlobSecondaryEndpoint=http://localhost:"
             + address.getPort()
             + "/";
         clientSettings.put(ENDPOINT_SUFFIX_SETTING.getConcreteSettingForNamespace(clientName).getKey(), endpoint);
@@ -361,7 +449,11 @@ public class AzureBlobContainerConditionalWriteTests extends OpenSearchTestCase 
         final RepositoryMetadata repositoryMetadata = new RepositoryMetadata(
             "repository",
             AzureRepository.TYPE,
-            Settings.builder().put(CONTAINER_SETTING.getKey(), "container").put(ACCOUNT_SETTING.getKey(), clientName).build()
+            Settings.builder()
+                .put(CONTAINER_SETTING.getKey(), "container")
+                .put(CLIENT_NAME.getKey(), clientName)
+                .put(LOCATION_MODE_SETTING.getKey(), locationMode)
+                .build()
         );
         return new AzureBlobContainer(BlobPath.cleanPath(), new AzureBlobStore(repositoryMetadata, service, threadPool), threadPool);
     }
@@ -419,6 +511,21 @@ public class AzureBlobContainerConditionalWriteTests extends OpenSearchTestCase 
             exchange.getResponseBody().write(response);
         }
         exchange.close();
+    }
+
+    private void closeCurrentService() throws IOException {
+        if (service != null) {
+            service.close();
+            service = null;
+        }
+    }
+
+    private static void countEndpoint(HttpExchange exchange, AtomicInteger primaryRequests, AtomicInteger secondaryRequests) {
+        if (exchange.getRequestHeaders().getFirst("Host").startsWith("localhost")) {
+            secondaryRequests.incrementAndGet();
+        } else {
+            primaryRequests.incrementAndGet();
+        }
     }
 
     private static String quoted(String value) {
