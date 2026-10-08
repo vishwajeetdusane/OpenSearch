@@ -27,6 +27,7 @@ import software.amazon.awssdk.services.s3.model.UploadPartResponse;
 import org.opensearch.cluster.metadata.RepositoryMetadata;
 import org.opensearch.common.blobstore.AsyncMultiStreamBlobContainer;
 import org.opensearch.common.blobstore.BlobPath;
+import org.opensearch.common.blobstore.stream.write.WritePriority;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.unit.ByteSizeUnit;
 import org.opensearch.repositories.blobstore.AbstractAsyncMultiStreamBlobContainerTestCase;
@@ -62,9 +63,11 @@ import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class S3AsyncMultiStreamBlobContainerContractTests extends AbstractAsyncMultiStreamBlobContainerTestCase
     implements
@@ -78,6 +81,12 @@ public class S3AsyncMultiStreamBlobContainerContractTests extends AbstractAsyncM
     @Override
     protected Set<Deviation> deviations() {
         return Set.of(Deviation.FAIL_IF_ALREADY_EXISTS_IGNORED, Deviation.SINGLE_PART_FINALIZER_FAILURE_DELETES_EXISTING_OBJECT);
+    }
+
+    @Override
+    protected WritePriority writePriority() {
+        // S3 HIGH uploads use the async transfer manager directly; admission and queue behavior remain S3-specific tests.
+        return WritePriority.HIGH;
     }
 
     private static final class S3AsyncUploadTestHarness implements AsyncUploadTestHarness {
@@ -205,6 +214,7 @@ public class S3AsyncMultiStreamBlobContainerContractTests extends AbstractAsyncM
             final GenericStatsMetricPublisher genericStatsMetricPublisher = new GenericStatsMetricPublisher(10000L, 10, 10000L, 10);
             final AsyncExecutorContainer unusedExecutorContainer = mock(AsyncExecutorContainer.class);
             final SizeBasedBlockingQ unusedQueue = mock(SizeBasedBlockingQ.class);
+            when(unusedQueue.isMaxCapacityBelowContentLength(anyLong())).thenReturn(true);
 
             return new S3BlobStore(
                 null,
