@@ -1960,7 +1960,7 @@ public class MetadataCreateIndexServiceTests extends OpenSearchTestCase {
         when(repositoriesService.repository(getRemoteStoreTranslogRepo(settings))).thenReturn(repositoryMock);
         BlobStore blobStoreMock = mock(BlobStore.class);
         when(repositoryMock.blobStore()).thenReturn(blobStoreMock);
-        when(blobStoreMock.isBlobMetadataEnabled()).thenReturn(randomBoolean());
+        when(blobStoreMock.isBlobMetadataEnabled(Mockito.any(Version.class))).thenReturn(randomBoolean());
         MetadataCreateIndexService metadataCreateIndexService = new MetadataCreateIndexService(
             settings,
             clusterService,
@@ -3231,7 +3231,7 @@ public class MetadataCreateIndexServiceTests extends OpenSearchTestCase {
 
         BlobStore blobStoreMock = mock(BlobStore.class);
         when(repositoryMock.blobStore()).thenReturn(blobStoreMock);
-        when(blobStoreMock.isBlobMetadataEnabled()).thenReturn(randomBoolean());
+        when(blobStoreMock.isBlobMetadataEnabled(Mockito.any(Version.class))).thenReturn(randomBoolean());
 
         when(repositoriesServiceSupplier.get()).thenReturn(repositoriesService);
         when(repositoriesService.repository(getRemoteStoreTranslogRepo(settings))).thenReturn(repositoryMock);
@@ -3304,7 +3304,7 @@ public class MetadataCreateIndexServiceTests extends OpenSearchTestCase {
 
         BlobStore blobStoreMock = mock(BlobStore.class);
         when(repositoryMock.blobStore()).thenReturn(blobStoreMock);
-        when(blobStoreMock.isBlobMetadataEnabled()).thenReturn(randomBoolean());
+        when(blobStoreMock.isBlobMetadataEnabled(Mockito.any(Version.class))).thenReturn(randomBoolean());
 
         when(repositoriesServiceSupplier.get()).thenReturn(repositoriesService);
         when(repositoriesService.repository(getRemoteStoreTranslogRepo(settings))).thenReturn(repositoryMock);
@@ -3376,7 +3376,7 @@ public class MetadataCreateIndexServiceTests extends OpenSearchTestCase {
 
         BlobStore blobStoreMock = mock(BlobStore.class);
         when(repositoryMock.blobStore()).thenReturn(blobStoreMock);
-        when(blobStoreMock.isBlobMetadataEnabled()).thenReturn(randomBoolean());
+        when(blobStoreMock.isBlobMetadataEnabled(Mockito.any(Version.class))).thenReturn(randomBoolean());
 
         when(repositoriesServiceSupplier.get()).thenReturn(repositoriesService);
         when(repositoriesService.repository(Mockito.any())).thenReturn(repositoryMock);
@@ -3449,7 +3449,7 @@ public class MetadataCreateIndexServiceTests extends OpenSearchTestCase {
 
         BlobStore blobStoreMock = mock(BlobStore.class);
         when(repositoryMock.blobStore()).thenReturn(blobStoreMock);
-        when(blobStoreMock.isBlobMetadataEnabled()).thenReturn(randomBoolean());
+        when(blobStoreMock.isBlobMetadataEnabled(Mockito.any(Version.class))).thenReturn(randomBoolean());
 
         when(repositoriesServiceSupplier.get()).thenReturn(repositoriesService);
         when(repositoriesService.repository(Mockito.any())).thenReturn(repositoryMock);
@@ -3566,7 +3566,7 @@ public class MetadataCreateIndexServiceTests extends OpenSearchTestCase {
         BlobStoreRepository repositoryMock = mock(BlobStoreRepository.class);
         BlobStore blobStoreMock = mock(BlobStore.class);
         when(repositoryMock.blobStore()).thenReturn(blobStoreMock);
-        when(blobStoreMock.isBlobMetadataEnabled()).thenReturn(randomBoolean());
+        when(blobStoreMock.isBlobMetadataEnabled(Mockito.any(Version.class))).thenReturn(randomBoolean());
         when(repositoriesServiceSupplier.get()).thenReturn(repositoriesService);
         when(repositoriesService.repository(Mockito.any())).thenReturn(repositoryMock);
 
