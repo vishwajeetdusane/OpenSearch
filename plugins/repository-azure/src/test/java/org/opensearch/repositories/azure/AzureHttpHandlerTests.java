@@ -116,11 +116,13 @@ public class AzureHttpHandlerTests extends OpenSearchTestCase {
         assertThat(secondProperties.header("x-ms-meta-stage"), nullValue());
     }
 
-    public void testPutBlobConditionsUseAzureErrorSemantics() throws Exception {
+    public void testPutBlobConditionsAndStagedBlockCleanup() throws Exception {
         final Response created = putBlob("conditional-blob", "original", Map.of("If-None-Match", "*", "x-ms-meta-version", "original"));
         assertThat(created.status, equalTo(201));
         final String originalETag = created.header("ETag");
         assertThat(originalETag, not(nullValue()));
+        final String stagedBlock = blockId("staged-0");
+        assertThat(putBlock("conditional-blob", stagedBlock, "staged", Map.of()).status, equalTo(201));
 
         final Response alreadyExists = putBlob(
             "conditional-blob",
@@ -130,11 +132,15 @@ public class AzureHttpHandlerTests extends OpenSearchTestCase {
         assertAzureError(alreadyExists, 409, "BlobAlreadyExists");
         assertBlob("conditional-blob", "original");
         assertThat(headBlob("conditional-blob").header("ETag"), equalTo(originalETag));
+        assertThat(handler.uncommittedBlocks().get(blobPath("conditional-blob")).keySet(), equalTo(Set.of(stagedBlock)));
+        assertThat(uncommittedBlockContents("conditional-blob", stagedBlock), equalTo("staged"));
 
         final Response stale = putBlob("conditional-blob", "stale", Map.of("If-Match", "\"stale\"", "x-ms-meta-version", "stale"));
         assertAzureError(stale, 412, "ConditionNotMet");
         assertBlob("conditional-blob", "original");
         assertThat(headBlob("conditional-blob").header("x-ms-meta-version"), equalTo("original"));
+        assertThat(handler.uncommittedBlocks().get(blobPath("conditional-blob")).keySet(), equalTo(Set.of(stagedBlock)));
+        assertThat(uncommittedBlockContents("conditional-blob", stagedBlock), equalTo("staged"));
 
         final Response replaced = putBlob(
             "conditional-blob",
@@ -145,6 +151,7 @@ public class AzureHttpHandlerTests extends OpenSearchTestCase {
         assertThat(replaced.header("ETag"), not(equalTo(originalETag)));
         assertBlob("conditional-blob", "replacement");
         assertThat(headBlob("conditional-blob").header("x-ms-meta-version"), equalTo("replacement"));
+        assertThat(handler.uncommittedBlocks(), not(hasKey(blobPath("conditional-blob"))));
     }
 
     public void testPutBlockListFailuresRetainBlocksAndSuccessClearsThem() throws Exception {
