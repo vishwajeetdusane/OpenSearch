@@ -394,16 +394,12 @@ public class AzureHttpHandler implements HttpHandler {
             ? Collections.emptyMap()
             : currentBlob.committedBlocks;
         final Map<String, BytesReference> newCommittedBlocks = new HashMap<>();
-        final Set<String> consumedUncommittedBlockIds = new HashSet<>();
         final ByteArrayOutputStream contents = new ByteArrayOutputStream();
 
         for (BlockReference blockReference : blockReferences) {
             BytesReference block = null;
             if (blockReference.type != BlockType.COMMITTED) {
                 block = blobUncommittedBlocks.get(blockReference.blockId);
-                if (block != null) {
-                    consumedUncommittedBlockIds.add(blockReference.blockId);
-                }
             }
             if (block == null && blockReference.type != BlockType.UNCOMMITTED) {
                 block = committedBlocks.get(blockReference.blockId);
@@ -419,13 +415,7 @@ public class AzureHttpHandler implements HttpHandler {
             newCommittedBlocks.put(blockReference.blockId, block);
         }
 
-        if (consumedUncommittedBlockIds.isEmpty() == false) {
-            final Map<String, BytesReference> remainingBlocks = uncommittedBlocks.get(blobPath);
-            consumedUncommittedBlockIds.forEach(remainingBlocks::remove);
-            if (remainingBlocks.isEmpty()) {
-                uncommittedBlocks.remove(blobPath);
-            }
-        }
+        uncommittedBlocks.remove(blobPath);
         return new Blob(new BytesArray(contents.toByteArray()), metadata, nextETag(), newCommittedBlocks);
     }
 

@@ -147,13 +147,23 @@ public class AzureHttpHandlerTests extends OpenSearchTestCase {
         assertThat(headBlob("conditional-blob").header("x-ms-meta-version"), equalTo("replacement"));
     }
 
-    public void testPutBlockListIfMatchPreservesFailedBlocksAndWinningBlob() throws Exception {
+    public void testPutBlockListFailuresRetainBlocksAndSuccessClearsThem() throws Exception {
         final Response original = putBlob("matched-blob", "original", Map.of("x-ms-meta-owner", "original"));
         final String originalETag = original.header("ETag");
         final String staleBlock = blockId("stale-0");
         final String currentBlock = blockId("current-0");
 
         assertThat(putBlock("matched-blob", staleBlock, "stale", Map.of("x-ms-meta-stage", "stale")).status, equalTo(201));
+        final Response createOnlyCommit = commitBlockList(
+            "matched-blob",
+            blockList(latest(staleBlock)),
+            Map.of("If-None-Match", "*", "x-ms-meta-owner", "create-only")
+        );
+        assertAzureError(createOnlyCommit, 409, "BlobAlreadyExists");
+        assertBlob("matched-blob", "original");
+        assertThat(handler.uncommittedBlocks().get(blobPath("matched-blob")).keySet(), equalTo(Set.of(staleBlock)));
+        assertThat(uncommittedBlockContents("matched-blob", staleBlock), equalTo("stale"));
+
         final Response staleCommit = commitBlockList(
             "matched-blob",
             blockList(latest(staleBlock)),
@@ -163,6 +173,16 @@ public class AzureHttpHandlerTests extends OpenSearchTestCase {
         assertBlob("matched-blob", "original");
         assertThat(headBlob("matched-blob").header("ETag"), equalTo(originalETag));
         assertThat(headBlob("matched-blob").header("x-ms-meta-owner"), equalTo("original"));
+        assertThat(handler.uncommittedBlocks().get(blobPath("matched-blob")).keySet(), equalTo(Set.of(staleBlock)));
+        assertThat(uncommittedBlockContents("matched-blob", staleBlock), equalTo("stale"));
+
+        final Response invalidCommit = commitBlockList(
+            "matched-blob",
+            blockList(latest(blockId("missing"))),
+            Map.of("If-Match", originalETag)
+        );
+        assertAzureError(invalidCommit, 400, "InvalidBlockList");
+        assertBlob("matched-blob", "original");
         assertThat(handler.uncommittedBlocks().get(blobPath("matched-blob")).keySet(), equalTo(Set.of(staleBlock)));
         assertThat(uncommittedBlockContents("matched-blob", staleBlock), equalTo("stale"));
 
@@ -176,8 +196,7 @@ public class AzureHttpHandlerTests extends OpenSearchTestCase {
         assertBlob("matched-blob", "current");
         assertThat(headBlob("matched-blob").header("x-ms-meta-owner"), equalTo("current"));
         assertThat(headBlob("matched-blob").header("x-ms-meta-stage"), nullValue());
-        assertThat(handler.uncommittedBlocks().get(blobPath("matched-blob")).keySet(), equalTo(Set.of(staleBlock)));
-        assertThat(uncommittedBlockContents("matched-blob", staleBlock), equalTo("stale"));
+        assertThat(handler.uncommittedBlocks(), not(hasKey(blobPath("matched-blob"))));
 
         final String tailBlock = blockId("tail-0");
         assertThat(putBlock("matched-blob", tailBlock, "tail", Map.of()).status, equalTo(201));
@@ -188,8 +207,7 @@ public class AzureHttpHandlerTests extends OpenSearchTestCase {
         );
         assertThat(reorderedCommit.status, equalTo(201));
         assertBlob("matched-blob", "tailcurrent");
-        assertThat(handler.uncommittedBlocks().get(blobPath("matched-blob")).keySet(), equalTo(Set.of(staleBlock)));
-        assertThat(uncommittedBlockContents("matched-blob", staleBlock), equalTo("stale"));
+        assertThat(handler.uncommittedBlocks(), not(hasKey(blobPath("matched-blob"))));
     }
 
     public void testExactlyOneConcurrentCreateOnlyBlockListWins() throws Exception {
@@ -207,13 +225,8 @@ public class AzureHttpHandlerTests extends OpenSearchTestCase {
         assertAzureError(failed, 409, "BlobAlreadyExists");
 
         final String winningContents = blobContents("create-only");
-        final String winningBlock = "one".equals(winningContents) ? firstBlock : secondBlock;
-        final String abandonedBlock = firstBlock.equals(winningBlock) ? secondBlock : firstBlock;
-        final String abandonedContents = firstBlock.equals(abandonedBlock) ? "one" : "two";
         assertThat(headBlob("create-only").header("x-ms-meta-attempt"), equalTo(winningContents));
-        assertThat(handler.uncommittedBlocks().get(blobPath("create-only")).keySet(), equalTo(Set.of(abandonedBlock)));
-        assertThat(uncommittedBlockContents("create-only", abandonedBlock), equalTo(abandonedContents));
-        assertThat(handler.uncommittedBlocks().get(blobPath("create-only")).get(winningBlock), nullValue());
+        assertThat(handler.uncommittedBlocks(), not(hasKey(blobPath("create-only"))));
     }
 
     private Response putBlock(final String blobName, final String blockId, final String contents, final Map<String, String> headers)
