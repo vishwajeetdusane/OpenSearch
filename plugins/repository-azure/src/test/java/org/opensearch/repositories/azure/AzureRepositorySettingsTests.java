@@ -32,6 +32,8 @@
 
 package org.opensearch.repositories.azure;
 
+import com.azure.storage.blob.BlobClient;
+import com.azure.storage.blob.models.ParallelTransferOptions;
 import org.opensearch.cluster.metadata.RepositoryMetadata;
 import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.Setting;
@@ -51,9 +53,11 @@ import java.util.List;
 import reactor.core.scheduler.Schedulers;
 import reactor.netty.http.HttpResources;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class AzureRepositorySettingsTests extends OpenSearchTestCase {
     @AfterClass
@@ -63,15 +67,23 @@ public class AzureRepositorySettingsTests extends OpenSearchTestCase {
     }
 
     private AzureRepository azureRepository(Settings settings) {
+        return azureRepository(settings, BlobClient.BLOB_DEFAULT_UPLOAD_BLOCK_SIZE, ByteSizeUnit.MB.toBytes(256));
+    }
+
+    private AzureRepository azureRepository(Settings settings, long writeBlockSize, long maxSingleUploadSize) {
         Settings internalSettings = Settings.builder()
             .put(Environment.PATH_HOME_SETTING.getKey(), createTempDir().toAbsolutePath())
             .putList(Environment.PATH_DATA_SETTING.getKey(), tmpPaths())
             .put(settings)
             .build();
+        final AzureStorageService storageService = mock(AzureStorageService.class);
+        when(storageService.getEffectiveBlobRequestOptionsForWriteBlob("default")).thenReturn(
+            new ParallelTransferOptions().setBlockSizeLong(writeBlockSize).setMaxSingleUploadSizeLong(maxSingleUploadSize)
+        );
         final AzureRepository azureRepository = new AzureRepository(
             new RepositoryMetadata("foo", "azure", internalSettings),
             NamedXContentRegistry.EMPTY,
-            mock(AzureStorageService.class),
+            storageService,
             BlobStoreTestUtil.mockClusterService(),
             new RecoverySettings(settings, new ClusterSettings(settings, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS))
         );
@@ -183,6 +195,39 @@ public class AzureRepositorySettingsTests extends OpenSearchTestCase {
             "failed to parse value [6tb] for setting [chunk_size], must be <= [" + AzureStorageService.MAX_CHUNK_SIZE.getStringRep() + "]",
             e.getMessage()
         );
+    }
+
+    public void testAzureBlockCountLimit() {
+        azureRepository(Settings.builder().put("chunk_size", "50000b").build(), 1L, 1L);
+
+        final IllegalArgumentException exception = expectThrows(
+            IllegalArgumentException.class,
+            () -> azureRepository(Settings.builder().put("chunk_size", "50001b").build(), 1L, 1L)
+        );
+        assertEquals(
+            "setting [azure.client.default.write.block_size] is [1b], but setting [chunk_size] [50001b] would require [50001] "
+                + "blocks; Azure Block Blob supports at most [50000] blocks. Increase [azure.client.default.write.block_size] "
+                + "to at least [2b] or reduce setting [chunk_size] to [50000b] or less",
+            exception.getMessage()
+        );
+    }
+
+    public void testMaximumChunkSizeBlockCountLimit() {
+        final long maximumChunkSize = AzureStorageService.MAX_CHUNK_SIZE.getBytes();
+        final long minimumWriteBlockSize = 1L + (maximumChunkSize - 1L) / 50_000L;
+
+        azureRepository(Settings.EMPTY, minimumWriteBlockSize, 1L);
+
+        final IllegalArgumentException exception = expectThrows(
+            IllegalArgumentException.class,
+            () -> azureRepository(Settings.EMPTY, minimumWriteBlockSize - 1L, 1L)
+        );
+        assertThat(exception.getMessage(), containsString("setting [chunk_size] [" + maximumChunkSize + "b]"));
+        assertThat(exception.getMessage(), containsString("to at least [" + minimumWriteBlockSize + "b]"));
+    }
+
+    public void testSingleUploadDoesNotUseBlockCountLimit() {
+        azureRepository(Settings.builder().put("chunk_size", "50001b").build(), 1L, 50001L);
     }
 
     public void testSystemRepositoryDefault() {

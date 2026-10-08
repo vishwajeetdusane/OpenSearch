@@ -8,6 +8,8 @@
 
 package org.opensearch.repositories.azure;
 
+import com.azure.storage.blob.BlobClient;
+import com.azure.storage.blob.models.ParallelTransferOptions;
 import org.opensearch.cluster.metadata.RepositoryMetadata;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.ClusterSettings;
@@ -27,8 +29,18 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class AzureRepositoryPluginTests extends OpenSearchTestCase {
+
+    private static AzureStorageService mockStorageService() {
+        final AzureStorageService storageService = mock(AzureStorageService.class);
+        when(storageService.getEffectiveBlobRequestOptionsForWriteBlob("default")).thenReturn(
+            new ParallelTransferOptions().setBlockSizeLong((long) BlobClient.BLOB_DEFAULT_UPLOAD_BLOCK_SIZE)
+                .setMaxSingleUploadSizeLong(256L * 1024L * 1024L)
+        );
+        return storageService;
+    }
 
     public void testLoadExtensionsMultipleProvidersUsesFirst() throws Exception {
         Settings settings = Settings.builder().put("node.name", "test").build();
@@ -135,7 +147,7 @@ public class AzureRepositoryPluginTests extends OpenSearchTestCase {
     }
 
     public void testRepositoryWithLiveNativeStore() {
-        AzureStorageService storageService = mock(AzureStorageService.class);
+        AzureStorageService storageService = mockStorageService();
         ClusterService clusterService = BlobStoreTestUtil.mockClusterService();
         Settings repoSettings = Settings.builder().put("container", "test-container").build();
         RepositoryMetadata metadata = new RepositoryMetadata("test", "azure", repoSettings);
@@ -179,7 +191,7 @@ public class AzureRepositoryPluginTests extends OpenSearchTestCase {
     }
 
     public void testRepositoryWithNullProvider() {
-        AzureStorageService storageService = mock(AzureStorageService.class);
+        AzureStorageService storageService = mockStorageService();
         ClusterService clusterService = BlobStoreTestUtil.mockClusterService();
         Settings repoSettings = Settings.builder().put("container", "test-container").build();
         RepositoryMetadata metadata = new RepositoryMetadata("test", "azure", repoSettings);

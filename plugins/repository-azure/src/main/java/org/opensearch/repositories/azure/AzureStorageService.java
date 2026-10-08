@@ -45,6 +45,7 @@ import com.azure.core.util.Context;
 import com.azure.core.util.logging.ClientLogger;
 import com.azure.storage.blob.BlobServiceClient;
 import com.azure.storage.blob.BlobServiceClientBuilder;
+import com.azure.storage.blob.implementation.util.ModelHelper;
 import com.azure.storage.blob.models.ParallelTransferOptions;
 import com.azure.storage.blob.specialized.BlockBlobAsyncClient;
 import com.azure.storage.common.implementation.connectionstring.StorageEndpoint;
@@ -380,6 +381,56 @@ public class AzureStorageService implements AutoCloseable {
             options.setMaxConcurrency(writeConcurrency);
         }
         return options;
+    }
+
+    ParallelTransferOptions getEffectiveBlobRequestOptionsForWriteBlob(String clientName) {
+        return ModelHelper.populateAndApplyDefaults(getBlobRequestOptionsForWriteBlob(clientName));
+    }
+
+    static void validateUploadSize(
+        long uploadSize,
+        ParallelTransferOptions transferOptions,
+        String uploadSizeDescription,
+        String writeBlockSizeSetting
+    ) {
+        final long maxSingleUploadSize = transferOptions.getMaxSingleUploadSizeLong();
+        if (uploadSize <= maxSingleUploadSize) {
+            return;
+        }
+
+        final long writeBlockSize = transferOptions.getBlockSizeLong();
+        final long blockCount = ceilDivide(uploadSize, writeBlockSize);
+        if (blockCount > BlockBlobAsyncClient.MAX_BLOCKS) {
+            final long minimumWriteBlockSize = ceilDivide(uploadSize, BlockBlobAsyncClient.MAX_BLOCKS);
+            final long maximumUploadSize = Math.multiplyExact(writeBlockSize, BlockBlobAsyncClient.MAX_BLOCKS);
+            throw new IllegalArgumentException(
+                "setting ["
+                    + writeBlockSizeSetting
+                    + "] is ["
+                    + writeBlockSize
+                    + "b], but "
+                    + uploadSizeDescription
+                    + " ["
+                    + uploadSize
+                    + "b] would require ["
+                    + blockCount
+                    + "] blocks; Azure Block Blob supports at most ["
+                    + BlockBlobAsyncClient.MAX_BLOCKS
+                    + "] blocks. Increase ["
+                    + writeBlockSizeSetting
+                    + "] to at least ["
+                    + minimumWriteBlockSize
+                    + "b] or reduce "
+                    + uploadSizeDescription
+                    + " to ["
+                    + maximumUploadSize
+                    + "b] or less"
+            );
+        }
+    }
+
+    private static long ceilDivide(long dividend, long divisor) {
+        return dividend == 0L ? 0L : 1L + (dividend - 1L) / divisor;
     }
 
     private AzureStorageSettings getStorageSettings(String clientName) {

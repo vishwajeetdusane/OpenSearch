@@ -61,6 +61,7 @@ import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -510,6 +511,26 @@ public class AzureBlobContainerRetriesTests extends OpenSearchTestCase {
             );
             assertThat(ioe.getMessage(), is("foo"));
         }
+    }
+
+    public void testRejectsTooManyBlocksBeforeSendingRequest() throws IOException {
+        final AtomicBoolean requestReceived = new AtomicBoolean(false);
+        httpServer.createContext("/container/write_too_many_blocks", exchange -> {
+            requestReceived.set(true);
+            exchange.sendResponseHeaders(RestStatus.CREATED.getStatus(), -1);
+            exchange.close();
+        });
+
+        final BlobContainer blobContainer = createBlobContainer(randomIntBetween(1, 5), (settings, clientName) -> {
+            settings.put(WRITE_BLOCK_SIZE_SETTING.getConcreteSettingForNamespace(clientName).getKey(), "1b");
+            settings.put(MAX_SINGLE_UPLOAD_SIZE_SETTING.getConcreteSettingForNamespace(clientName).getKey(), "1b");
+        });
+        final IllegalArgumentException exception = expectThrows(
+            IllegalArgumentException.class,
+            () -> blobContainer.writeBlob("write_too_many_blocks", new ByteArrayInputStream(new byte[0]), 50_001L, false)
+        );
+        assertThat(exception.getMessage(), containsString("would require [50001] blocks"));
+        assertFalse(requestReceived.get());
     }
 
     private static byte[] randomBlobContent() {

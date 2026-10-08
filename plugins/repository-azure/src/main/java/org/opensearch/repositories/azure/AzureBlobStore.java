@@ -364,6 +364,12 @@ public class AzureBlobStore implements BlobStore {
         assert inputStream.markSupported()
             : "Should not be used with non-mark supporting streams as their retry handling in the SDK is broken";
         logger.trace(() -> new ParameterizedMessage("writeBlob({}, stream, {})", blobName, blobSize));
+        AzureStorageService.validateUploadSize(
+            blobSize,
+            service.getEffectiveBlobRequestOptionsForWriteBlob(clientName),
+            "blob size",
+            AzureStorageSettings.WRITE_BLOCK_SIZE_SETTING.getConcreteSettingForNamespace(clientName).getKey()
+        );
         final Tuple<BlobServiceClient, Supplier<Context>> client = client();
         final BlobContainerClient blobContainer = client.v1().getBlobContainerClient(container);
         final BlobClient blob = blobContainer.getBlobClient(blobName);
