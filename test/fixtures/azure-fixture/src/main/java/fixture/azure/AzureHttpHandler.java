@@ -115,7 +115,7 @@ public class AzureHttpHandler implements HttpHandler {
                 Blob committedBlob = null;
                 synchronized (stateLock) {
                     final Blob currentBlob = blobs.get(blobPath);
-                    error = conditionError(exchange.getRequestHeaders(), currentBlob, Operation.PUT_BLOCK_LIST);
+                    error = conditionError(exchange.getRequestHeaders(), currentBlob);
                     if (error == null) {
                         try {
                             committedBlob = commitBlockList(blobPath, currentBlob, blockReferences, readMetadata(exchange.getRequestHeaders()));
@@ -140,7 +140,7 @@ public class AzureHttpHandler implements HttpHandler {
                 Blob committedBlob = null;
                 synchronized (stateLock) {
                     final String blobPath = exchange.getRequestURI().getPath();
-                    error = conditionError(exchange.getRequestHeaders(), blobs.get(blobPath), Operation.PUT_BLOB);
+                    error = conditionError(exchange.getRequestHeaders(), blobs.get(blobPath));
                     if (error == null) {
                         committedBlob = new Blob(contents, readMetadata(exchange.getRequestHeaders()), nextETag(), Collections.emptyMap());
                         blobs.put(blobPath, committedBlob);
@@ -433,7 +433,7 @@ public class AzureHttpHandler implements HttpHandler {
         return "\"" + ++nextETag + "\"";
     }
 
-    private static StorageError conditionError(final Headers headers, final Blob currentBlob, final Operation operation) {
+    private static StorageError conditionError(final Headers headers, final Blob currentBlob) {
         final String ifMatch = headers.getFirst("If-Match");
         if (ifMatch != null && (currentBlob == null || matchesETag(ifMatch, currentBlob.eTag) == false)) {
             return new StorageError(RestStatus.PRECONDITION_FAILED, "ConditionNotMet");
@@ -441,7 +441,7 @@ public class AzureHttpHandler implements HttpHandler {
 
         final String ifNoneMatch = headers.getFirst("If-None-Match");
         if (ifNoneMatch != null && currentBlob != null && matchesETag(ifNoneMatch, currentBlob.eTag)) {
-            if ("*".equals(ifNoneMatch.trim()) && operation == Operation.PUT_BLOB) {
+            if ("*".equals(ifNoneMatch.trim())) {
                 return new StorageError(RestStatus.CONFLICT, "BlobAlreadyExists");
             }
             return new StorageError(RestStatus.PRECONDITION_FAILED, "ConditionNotMet");
@@ -467,11 +467,6 @@ public class AzureHttpHandler implements HttpHandler {
     private static void addCommittedBlobHeaders(final Headers headers, final Blob blob) {
         headers.add("ETag", blob.eTag);
         blob.metadata.forEach((name, value) -> headers.add("x-ms-meta-" + name, value));
-    }
-
-    private enum Operation {
-        PUT_BLOB,
-        PUT_BLOCK_LIST
     }
 
     private enum BlockType {

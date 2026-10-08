@@ -202,9 +202,9 @@ public class AzureHttpHandlerTests extends OpenSearchTestCase {
             () -> commitBlockList("create-only", blockList(latest(firstBlock)), Map.of("If-None-Match", "*", "x-ms-meta-attempt", "one")),
             () -> commitBlockList("create-only", blockList(latest(secondBlock)), Map.of("If-None-Match", "*", "x-ms-meta-attempt", "two"))
         );
-        assertThat(responses.stream().map(response -> response.status).sorted().toList(), equalTo(List.of(201, 412)));
-        final Response failed = responses.stream().filter(response -> response.status == 412).findFirst().orElseThrow();
-        assertAzureError(failed, 412, "ConditionNotMet");
+        assertThat(responses.stream().map(response -> response.status).sorted().toList(), equalTo(List.of(201, 409)));
+        final Response failed = responses.stream().filter(response -> response.status == 409).findFirst().orElseThrow();
+        assertAzureError(failed, 409, "BlobAlreadyExists");
 
         final String winningContents = blobContents("create-only");
         final String winningBlock = "one".equals(winningContents) ? firstBlock : secondBlock;
