@@ -384,7 +384,25 @@ public class AzureStorageServiceTests extends OpenSearchTestCase {
         try (final AzureStorageService service = storageServiceWithSettingsValidation(buildSettings())) {
             assertThat(service.getReadBlockSize("azure1"), nullValue());
             assertThat(service.getBlobRequestOptionsForWriteBlob("azure1"), nullValue());
+            final ParallelTransferOptions effectiveOptions = service.getEffectiveBlobRequestOptionsForWriteBlob("azure1");
+            assertThat(effectiveOptions.getBlockSizeLong(), is(ByteSizeUnit.MB.toBytes(4)));
+            assertThat(effectiveOptions.getMaxSingleUploadSizeLong(), is(ByteSizeUnit.MB.toBytes(256)));
         }
+    }
+
+    public void testUploadSizeValidationHandlesLongMaximum() {
+        final ParallelTransferOptions transferOptions = new ParallelTransferOptions().setBlockSizeLong(1L).setMaxSingleUploadSizeLong(1L);
+        final IllegalArgumentException exception = expectThrows(
+            IllegalArgumentException.class,
+            () -> AzureStorageService.validateUploadSize(
+                Long.MAX_VALUE,
+                transferOptions,
+                "blob size",
+                "azure.client.default.write.block_size"
+            )
+        );
+        assertThat(exception.getMessage(), containsString("blob size [" + Long.MAX_VALUE + "b]"));
+        assertThat(exception.getMessage(), containsString("to at least [184467440737096b]"));
     }
 
     public void testTransferSettings() throws IOException {
