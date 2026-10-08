@@ -35,6 +35,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 import com.azure.storage.blob.BlobClient;
+import com.azure.storage.blob.BlobServiceClient;
 import com.azure.storage.blob.models.BlobStorageException;
 import com.azure.storage.blob.models.ParallelTransferOptions;
 import com.azure.storage.common.policy.RequestRetryOptions;
@@ -82,6 +83,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -97,6 +99,7 @@ import reactor.core.scheduler.Schedulers;
 import reactor.netty.http.HttpResources;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.opensearch.repositories.azure.AzureRepository.Repository.CLIENT_NAME;
 import static org.opensearch.repositories.azure.AzureRepository.Repository.CONTAINER_SETTING;
 import static org.opensearch.repositories.azure.AzureRepository.Repository.LOCATION_MODE_SETTING;
 import static org.opensearch.repositories.azure.AzureStorageSettings.ACCOUNT_SETTING;
@@ -216,7 +219,7 @@ public class AzureBlobContainerRetriesTests extends OpenSearchTestCase {
             AzureRepository.TYPE,
             Settings.builder()
                 .put(CONTAINER_SETTING.getKey(), "container")
-                .put(ACCOUNT_SETTING.getKey(), clientName)
+                .put(CLIENT_NAME.getKey(), clientName)
                 .put(LOCATION_MODE_SETTING.getKey(), locationMode)
                 .build()
         );
@@ -445,6 +448,73 @@ public class AzureBlobContainerRetriesTests extends OpenSearchTestCase {
         assertEquals(LocationMode.PRIMARY_ONLY, service.storageSettings.get(activeClientName).getLocationMode());
     }
 
+    public void testRepositoriesRetainIndependentLocationModesAcrossReload() throws Exception {
+        final InetSocketAddress address = httpServer.getAddress();
+        final String authority = "http://" + InetAddresses.toUriString(address.getAddress()) + ":" + address.getPort();
+        activeClientName = randomAlphaOfLength(5).toLowerCase(Locale.ROOT);
+        service = createStorageService(buildClientSettings(activeClientName, 1, authority + "/old-primary", authority + "/old-secondary"));
+        final AzureBlobStore primaryStore = createBlobStore(service, activeClientName, LocationMode.PRIMARY_ONLY);
+        final AzureBlobStore secondaryStore = createBlobStore(service, activeClientName, LocationMode.SECONDARY_ONLY);
+        final AtomicInteger oldPrimaryRequests = new AtomicInteger();
+        final AtomicInteger oldSecondaryRequests = new AtomicInteger();
+        final AtomicInteger newPrimaryRequests = new AtomicInteger();
+        final AtomicInteger newSecondaryRequests = new AtomicInteger();
+        registerDownloadResponse("/old-primary/container/reload-mode", oldPrimaryRequests);
+        registerDownloadResponse("/old-secondary/container/reload-mode", oldSecondaryRequests);
+        registerDownloadResponse("/new-primary/container/reload-mode", newPrimaryRequests);
+        registerDownloadResponse("/new-secondary/container/reload-mode", newSecondaryRequests);
+
+        try (InputStream input = primaryStore.getInputStream("reload-mode", 0L, 1L)) {
+            assertEquals(1, Streams.readFully(input).length());
+        }
+        try (InputStream input = secondaryStore.getInputStream("reload-mode", 0L, 1L)) {
+            assertEquals(1, Streams.readFully(input).length());
+        }
+        assertEquals(1, oldPrimaryRequests.get());
+        assertEquals(1, oldSecondaryRequests.get());
+        assertEquals(0, newPrimaryRequests.get());
+        assertEquals(0, newSecondaryRequests.get());
+        final BlobServiceClient oldPrimary = service.client(activeClientName, LocationMode.PRIMARY_ONLY, (request, response) -> {}).v1();
+        final BlobServiceClient oldSecondary = service.client(activeClientName, LocationMode.SECONDARY_ONLY, (request, response) -> {})
+            .v1();
+        assertEquals(2, service.locationClientCount());
+
+        final Settings reloaded = buildClientSettings(activeClientName, 1, authority + "/new-primary", authority + "/new-secondary");
+        service.refreshAndClearCache(AzureStorageSettings.load(reloaded));
+        assertEquals(0, service.locationClientCount());
+
+        try (InputStream input = primaryStore.getInputStream("reload-mode", 0L, 1L)) {
+            assertEquals(1, Streams.readFully(input).length());
+        }
+        try (InputStream input = secondaryStore.getInputStream("reload-mode", 0L, 1L)) {
+            assertEquals(1, Streams.readFully(input).length());
+        }
+        assertEquals(1, oldPrimaryRequests.get());
+        assertEquals(1, oldSecondaryRequests.get());
+        assertEquals(1, newPrimaryRequests.get());
+        assertEquals(1, newSecondaryRequests.get());
+        final BlobServiceClient newPrimary = service.client(activeClientName, LocationMode.PRIMARY_ONLY, (request, response) -> {}).v1();
+        final BlobServiceClient newSecondary = service.client(activeClientName, LocationMode.SECONDARY_ONLY, (request, response) -> {})
+            .v1();
+
+        assertNotSame(oldPrimary, newPrimary);
+        assertNotSame(oldSecondary, newSecondary);
+        assertEquals(2, service.locationClientCount());
+        assertEquals(LocationMode.PRIMARY_ONLY, service.storageSettings.get(activeClientName).getLocationMode());
+        expectThrows(
+            RuntimeException.class,
+            () -> oldPrimary.getBlobContainerClient("container").getBlobClient("reload-mode").getProperties()
+        );
+        expectThrows(
+            RuntimeException.class,
+            () -> oldSecondary.getBlobContainerClient("container").getBlobClient("reload-mode").getProperties()
+        );
+        assertEquals(1, oldPrimaryRequests.get());
+        assertEquals(1, oldSecondaryRequests.get());
+        assertEquals(1, newPrimaryRequests.get());
+        assertEquals(1, newSecondaryRequests.get());
+    }
+
     public void testBlobExistsDoesNotReturnStaleSuccessAfterReload() throws Exception {
         assertBlobExistsReloadResult(true, false);
     }
@@ -453,31 +523,123 @@ public class AzureBlobContainerRetriesTests extends OpenSearchTestCase {
         assertBlobExistsReloadResult(false, true);
     }
 
+    public void testBlobExistsFailsAfterSecondReloadForStaleSuccess() throws Exception {
+        assertBlobExistsFailsAfterSecondReload(true);
+    }
+
+    public void testBlobExistsFailsAfterSecondReloadForStaleNotFound() throws Exception {
+        assertBlobExistsFailsAfterSecondReload(false);
+    }
+
+    private void assertBlobExistsFailsAfterSecondReload(boolean responseExists) throws Exception {
+        final InetSocketAddress address = httpServer.getAddress();
+        final String authority = "http://" + InetAddresses.toUriString(address.getAddress()) + ":" + address.getPort();
+        activeClientName = randomAlphaOfLength(5).toLowerCase(Locale.ROOT);
+        service = createStorageService(
+            buildClientSettings(activeClientName, 1, authority + "/generation-a-primary", authority + "/generation-a-secondary")
+        );
+        final AzureBlobStore blobStore = createBlobStore(service, activeClientName, LocationMode.SECONDARY_ONLY);
+        final String blobName = responseExists ? "double-stale-success" : "double-stale-not-found";
+        final AtomicInteger generationARequests = new AtomicInteger();
+        final AtomicInteger generationBRequests = new AtomicInteger();
+        final AtomicInteger generationCRequests = new AtomicInteger();
+        final AtomicInteger generationASecondaryRequests = new AtomicInteger();
+        final AtomicInteger generationBSecondaryRequests = new AtomicInteger();
+        final AtomicInteger generationCSecondaryRequests = new AtomicInteger();
+        registerExistenceResponse("/generation-a-primary/container/" + blobName, responseExists, generationARequests);
+        registerExistenceResponse("/generation-b-primary/container/" + blobName, responseExists, generationBRequests);
+        registerExistenceResponse("/generation-c-primary/container/" + blobName, responseExists, generationCRequests);
+        registerExistenceResponse("/generation-a-secondary/container/" + blobName, responseExists, generationASecondaryRequests);
+        registerExistenceResponse("/generation-b-secondary/container/" + blobName, responseExists, generationBSecondaryRequests);
+        registerExistenceResponse("/generation-c-secondary/container/" + blobName, responseExists, generationCSecondaryRequests);
+
+        final CountDownLatch firstValidation = new CountDownLatch(1);
+        final CountDownLatch secondValidation = new CountDownLatch(1);
+        final CountDownLatch releaseFirst = new CountDownLatch(1);
+        final CountDownLatch releaseSecond = new CountDownLatch(1);
+        final AtomicInteger validations = new AtomicInteger();
+        blobStore.setBeforeExistenceResultValidation(() -> {
+            final int validation = validations.incrementAndGet();
+            final CountDownLatch reached = validation == 1 ? firstValidation : secondValidation;
+            final CountDownLatch release = validation == 1 ? releaseFirst : releaseSecond;
+            reached.countDown();
+            try {
+                if (release.await(10, TimeUnit.SECONDS) == false) {
+                    throw new AssertionError("timed out waiting to release existence validation");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+        });
+
+        final ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            final Future<Boolean> result = executor.submit(() -> blobStore.blobExists(blobName));
+            assertTrue(firstValidation.await(10, TimeUnit.SECONDS));
+            service.refreshAndClearCache(
+                AzureStorageSettings.load(
+                    buildClientSettings(
+                        activeClientName,
+                        1,
+                        authority + "/generation-b-primary",
+                        authority + "/generation-b-secondary"
+                    )
+                )
+            );
+            releaseFirst.countDown();
+
+            assertTrue(secondValidation.await(10, TimeUnit.SECONDS));
+            service.refreshAndClearCache(
+                AzureStorageSettings.load(
+                    buildClientSettings(
+                        activeClientName,
+                        1,
+                        authority + "/generation-c-primary",
+                        authority + "/generation-c-secondary"
+                    )
+                )
+            );
+            releaseSecond.countDown();
+
+            final ExecutionException failure = expectThrows(ExecutionException.class, () -> result.get(10, TimeUnit.SECONDS));
+            assertThat(failure.getCause(), instanceOf(IOException.class));
+        } finally {
+            releaseFirst.countDown();
+            releaseSecond.countDown();
+            executor.shutdownNow();
+        }
+
+        assertEquals(1, generationARequests.get());
+        assertEquals(1, generationBRequests.get());
+        assertEquals(0, generationCRequests.get());
+        assertEquals(0, generationASecondaryRequests.get());
+        assertEquals(0, generationBSecondaryRequests.get());
+        assertEquals(0, generationCSecondaryRequests.get());
+        assertEquals(2, validations.get());
+    }
+
     private void assertBlobExistsReloadResult(boolean oldResult, boolean newResult) throws Exception {
         final InetSocketAddress address = httpServer.getAddress();
         final String authority = "http://" + InetAddresses.toUriString(address.getAddress()) + ":" + address.getPort();
         activeClientName = randomAlphaOfLength(5).toLowerCase(Locale.ROOT);
-        service = createStorageService(buildClientSettings(activeClientName, 1, authority + "/old", null));
-        final AzureBlobStore blobStore = createBlobStore(service, activeClientName, LocationMode.PRIMARY_ONLY);
+        service = createStorageService(buildClientSettings(activeClientName, 1, authority + "/old-primary", authority + "/old-secondary"));
+        final AzureBlobStore blobStore = createBlobStore(service, activeClientName, LocationMode.SECONDARY_ONLY);
         final String blobName = oldResult ? "stale-success" : "stale-not-found";
-        httpServer.createContext("/old/container/" + blobName, exchange -> {
-            if (oldResult) {
-                sendBlobProperties(exchange);
-            } else {
-                sendAzureError(exchange, 404, "BlobNotFound");
-            }
-        });
-        httpServer.createContext("/new/container/" + blobName, exchange -> {
-            if (newResult) {
-                sendBlobProperties(exchange);
-            } else {
-                sendAzureError(exchange, 404, "BlobNotFound");
-            }
-        });
+        final AtomicInteger oldPrimaryRequests = new AtomicInteger();
+        final AtomicInteger oldSecondaryRequests = new AtomicInteger();
+        final AtomicInteger newPrimaryRequests = new AtomicInteger();
+        final AtomicInteger newSecondaryRequests = new AtomicInteger();
+        registerExistenceResponse("/old-primary/container/" + blobName, oldResult, oldPrimaryRequests);
+        registerExistenceResponse("/old-secondary/container/" + blobName, oldResult, oldSecondaryRequests);
+        registerExistenceResponse("/new-primary/container/" + blobName, newResult, newPrimaryRequests);
+        registerExistenceResponse("/new-secondary/container/" + blobName, newResult, newSecondaryRequests);
 
         final CountDownLatch validationReached = new CountDownLatch(1);
         final CountDownLatch releaseValidation = new CountDownLatch(1);
+        final AtomicInteger validations = new AtomicInteger();
         blobStore.setBeforeExistenceResultValidation(() -> {
+            validations.incrementAndGet();
             validationReached.countDown();
             try {
                 if (releaseValidation.await(10, TimeUnit.SECONDS) == false) {
@@ -493,7 +655,16 @@ public class AzureBlobContainerRetriesTests extends OpenSearchTestCase {
         try {
             final Future<Boolean> result = executor.submit(() -> blobStore.blobExists(blobName));
             assertTrue(validationReached.await(10, TimeUnit.SECONDS));
-            final Settings reloadedSettings = buildClientSettings(activeClientName, 1, authority + "/new", null);
+            assertEquals(1, oldPrimaryRequests.get());
+            assertEquals(0, oldSecondaryRequests.get());
+            assertEquals(0, newPrimaryRequests.get());
+            assertEquals(0, newSecondaryRequests.get());
+            final Settings reloadedSettings = buildClientSettings(
+                activeClientName,
+                1,
+                authority + "/new-primary",
+                authority + "/new-secondary"
+            );
             service.refreshAndClearCache(AzureStorageSettings.load(reloadedSettings));
             releaseValidation.countDown();
             assertEquals(newResult, result.get(10, TimeUnit.SECONDS));
@@ -501,6 +672,11 @@ public class AzureBlobContainerRetriesTests extends OpenSearchTestCase {
             releaseValidation.countDown();
             executor.shutdownNow();
         }
+        assertEquals(1, oldPrimaryRequests.get());
+        assertEquals(0, oldSecondaryRequests.get());
+        assertEquals(1, newPrimaryRequests.get());
+        assertEquals(0, newSecondaryRequests.get());
+        assertEquals(2, validations.get());
     }
 
     public void testReadNonexistentBlobThrowsNoSuchFileException() {
@@ -829,6 +1005,24 @@ public class AzureBlobContainerRetriesTests extends OpenSearchTestCase {
         exchange.sendResponseHeaders(206, 1);
         exchange.getResponseBody().write(1);
         exchange.close();
+    }
+
+    private void registerDownloadResponse(String path, AtomicInteger requests) {
+        httpServer.createContext(path, exchange -> {
+            requests.incrementAndGet();
+            sendBlobDownload(exchange);
+        });
+    }
+
+    private void registerExistenceResponse(String path, boolean exists, AtomicInteger requests) {
+        httpServer.createContext(path, exchange -> {
+            requests.incrementAndGet();
+            if (exists) {
+                sendBlobProperties(exchange);
+            } else {
+                sendAzureError(exchange, 404, "BlobNotFound");
+            }
+        });
     }
 
     private static boolean isSecondaryRequest(HttpExchange exchange) {
