@@ -64,6 +64,7 @@ import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -324,6 +325,50 @@ public class AzureBlobContainerRetriesTests extends OpenSearchTestCase {
             );
             assertThat(exception.getMessage(), containsString("valid UTF-8"));
         }
+    }
+
+    public void testMetadataDecodeFailureClosesInputStreamBeforePropagating() {
+        final AtomicInteger closeCalls = new AtomicInteger();
+        final InputStream inputStream = closeTrackingInputStream(closeCalls);
+
+        final IOException exception = expectThrows(
+            IOException.class,
+            () -> AzureBlobContainer.wrapInputStreamWithMetadata(
+                inputStream,
+                Map.of(AzureBlobMetadataCodec.KEY_PREFIX + "ff", "v1_YQ==")
+            )
+        );
+
+        assertThat(exception.getMessage(), containsString("valid UTF-8"));
+        assertThat(closeCalls.get(), equalTo(1));
+    }
+
+    public void testSuccessfulMetadataWrappingLeavesInputStreamOpen() throws Exception {
+        final AtomicInteger closeCalls = new AtomicInteger();
+        final InputStream inputStream = closeTrackingInputStream(closeCalls);
+        final Map<String, String> logicalMetadata = Map.of("ckp-data", "checkpoint");
+
+        try (
+            InputStreamWithMetadata wrapped = AzureBlobContainer.wrapInputStreamWithMetadata(
+                inputStream,
+                AzureBlobMetadataCodec.encode(logicalMetadata)
+            )
+        ) {
+            assertSame(inputStream, wrapped.getInputStream());
+            assertThat(wrapped.getMetadata(), equalTo(logicalMetadata));
+            assertThat(closeCalls.get(), equalTo(0));
+        }
+        assertThat(closeCalls.get(), equalTo(1));
+    }
+
+    private static InputStream closeTrackingInputStream(AtomicInteger closeCalls) {
+        return new ByteArrayInputStream(new byte[0]) {
+            @Override
+            public void close() throws IOException {
+                closeCalls.incrementAndGet();
+                super.close();
+            }
+        };
     }
 
     public void testReadRangeBlobWithRetries() throws Exception {

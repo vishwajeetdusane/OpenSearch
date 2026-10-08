@@ -126,10 +126,18 @@ public class AzureBlobContainer extends AbstractBlobContainer {
     @Override
     public InputStreamWithMetadata readBlobWithMetadata(String blobName) throws IOException {
         final BlobInputStream inputStream = openInputStream(blobName, 0L, null, false);
+        return wrapInputStreamWithMetadata(inputStream, inputStream.getProperties().getMetadata());
+    }
+
+    static InputStreamWithMetadata wrapInputStreamWithMetadata(InputStream inputStream, Map<String, String> metadata) throws IOException {
         try {
-            return new InputStreamWithMetadata(inputStream, AzureBlobMetadataCodec.decode(inputStream.getProperties().getMetadata()));
+            return new InputStreamWithMetadata(inputStream, AzureBlobMetadataCodec.decode(metadata));
         } catch (IOException | RuntimeException e) {
-            inputStream.close();
+            try {
+                inputStream.close();
+            } catch (IOException | RuntimeException closeException) {
+                e.addSuppressed(closeException);
+            }
             throw e;
         }
     }
