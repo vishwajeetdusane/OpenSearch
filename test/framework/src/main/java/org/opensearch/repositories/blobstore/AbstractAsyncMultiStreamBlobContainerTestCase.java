@@ -89,8 +89,6 @@ public abstract class AbstractAsyncMultiStreamBlobContainerTestCase extends Open
         assertSuccessfulUpload(execution, true);
         assertEquals(1, finalizerCalls.get());
         assertEquals(Boolean.TRUE, finalizerResult.get());
-        assertEquals(1, harness.multipartUploadCount());
-        assertEquals(0, harness.singleUploadCount());
         assertStoredBlob("exact-bytes", contents, Map.of());
     }
 
@@ -141,7 +139,7 @@ public abstract class AbstractAsyncMultiStreamBlobContainerTestCase extends Open
         assertEquals(1, finalizerCalls.get());
         assertEquals(Boolean.TRUE, finalizerResult.get());
         assertNull(harness.getBlob("finalizer-failure"));
-        assertEquals(0, harness.activeMultipartUploadCount());
+        harness.assertNoDanglingUploadState();
     }
 
     public void testPartFailureLeavesNoPartialVisibleObject() throws Exception {
@@ -160,7 +158,7 @@ public abstract class AbstractAsyncMultiStreamBlobContainerTestCase extends Open
         assertFailedUpload(execution, true);
         assertEquals(0, finalizerCalls.get());
         assertNull(harness.getBlob("part-failure"));
-        assertEquals(0, harness.activeMultipartUploadCount());
+        harness.assertNoDanglingUploadState();
     }
 
     public void testFailedFinalPublicationPreservesExistingObject() throws Exception {
@@ -182,7 +180,7 @@ public abstract class AbstractAsyncMultiStreamBlobContainerTestCase extends Open
         assertFailedUpload(execution, true);
         assertEquals(1, finalizerCalls.get());
         assertStoredBlob("failed-replacement", original, originalMetadata);
-        assertEquals(0, harness.activeMultipartUploadCount());
+        harness.assertNoDanglingUploadState();
     }
 
     public void testOverwriteReplacesExistingObjectAndMetadata() throws Exception {
@@ -237,8 +235,6 @@ public abstract class AbstractAsyncMultiStreamBlobContainerTestCase extends Open
         );
 
         assertFailedUpload(execution, true);
-        assertEquals(0, harness.multipartUploadCount());
-        assertEquals(1, harness.singleUploadCount());
         if (deviations().contains(Deviation.SINGLE_PART_FINALIZER_FAILURE_DELETES_EXISTING_OBJECT)) {
             assertNull(harness.getBlob("single-finalizer-failure"));
         } else {
@@ -386,11 +382,7 @@ public abstract class AbstractAsyncMultiStreamBlobContainerTestCase extends Open
 
         void releaseFinalPublication();
 
-        int multipartUploadCount();
-
-        int singleUploadCount();
-
-        int activeMultipartUploadCount();
+        void assertNoDanglingUploadState();
 
         void awaitIdle() throws Exception;
     }

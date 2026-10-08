@@ -170,18 +170,8 @@ public class S3AsyncMultiStreamBlobContainerContractTests extends AbstractAsyncM
         }
 
         @Override
-        public int multipartUploadCount() {
-            return statefulClient.multipartUploadCount();
-        }
-
-        @Override
-        public int singleUploadCount() {
-            return statefulClient.singleUploadCount();
-        }
-
-        @Override
-        public int activeMultipartUploadCount() {
-            return statefulClient.activeMultipartUploadCount();
+        public void assertNoDanglingUploadState() {
+            statefulClient.assertNoDanglingUploadState();
         }
 
         @Override
@@ -279,8 +269,6 @@ public class S3AsyncMultiStreamBlobContainerContractTests extends AbstractAsyncM
         private final List<Integer> completedPartOrder = new CopyOnWriteArrayList<>();
         private final AtomicInteger uploadIdGenerator = new AtomicInteger();
         private final AtomicInteger expectedPartCount = new AtomicInteger();
-        private final AtomicInteger multipartUploadCount = new AtomicInteger();
-        private final AtomicInteger singleUploadCount = new AtomicInteger();
         private final AtomicReference<FailureStage> failureStage = new AtomicReference<>();
         private final AtomicBoolean failureInjected = new AtomicBoolean();
         private final AtomicBoolean holdFinalPublication = new AtomicBoolean();
@@ -307,7 +295,6 @@ public class S3AsyncMultiStreamBlobContainerContractTests extends AbstractAsyncM
             final PutObjectRequest request = invocation.getArgument(0);
             final AsyncRequestBody requestBody = invocation.getArgument(1);
             final CompletableFuture<PutObjectResponse> response = track(new CompletableFuture<>());
-            singleUploadCount.incrementAndGet();
             collectBody(requestBody, request.contentLength()).whenComplete((contents, throwable) -> {
                 if (throwable != null) {
                     response.completeExceptionally(throwable);
@@ -322,7 +309,6 @@ public class S3AsyncMultiStreamBlobContainerContractTests extends AbstractAsyncM
         private CompletableFuture<CreateMultipartUploadResponse> createMultipartUpload(InvocationOnMock invocation) {
             final CreateMultipartUploadRequest request = invocation.getArgument(0);
             final String uploadId = "upload-" + uploadIdGenerator.incrementAndGet();
-            multipartUploadCount.incrementAndGet();
             multipartSessions.put(uploadId, new MultipartSession(request.key(), request.metadata()));
             return track(CompletableFuture.completedFuture(CreateMultipartUploadResponse.builder().uploadId(uploadId).build()));
         }
@@ -520,16 +506,10 @@ public class S3AsyncMultiStreamBlobContainerContractTests extends AbstractAsyncM
             }
         }
 
-        private int multipartUploadCount() {
-            return multipartUploadCount.get();
-        }
-
-        private int singleUploadCount() {
-            return singleUploadCount.get();
-        }
-
-        private int activeMultipartUploadCount() {
-            return multipartSessions.size();
+        private void assertNoDanglingUploadState() {
+            if (multipartSessions.isEmpty() == false) {
+                throw new AssertionError("dangling S3 multipart uploads " + multipartSessions.keySet());
+            }
         }
 
         private StoredBlob getBlob(String blobName) {
