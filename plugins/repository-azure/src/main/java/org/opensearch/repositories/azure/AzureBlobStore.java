@@ -274,8 +274,11 @@ public class AzureBlobStore implements BlobStore {
         return new DeleteResult(blobsDeleted.get(), bytesDeleted.get());
     }
 
-    public BlobInputStream getInputStream(String blob, long position, @Nullable Long length) throws URISyntaxException,
-        BlobStorageException {
+    public InputStream getInputStream(String blob, long position, @Nullable Long length) throws URISyntaxException, BlobStorageException {
+        return getBlobInputStream(blob, position, length);
+    }
+
+    BlobInputStream getBlobInputStream(String blob, long position, @Nullable Long length) throws URISyntaxException, BlobStorageException {
         final Tuple<BlobServiceClient, Supplier<Context>> client = client();
         final BlobContainerClient blobContainer = client.v1().getBlobContainerClient(container);
         final BlobClient azureBlob = blobContainer.getBlobClient(blob);

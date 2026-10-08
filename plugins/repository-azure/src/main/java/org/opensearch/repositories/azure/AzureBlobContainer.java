@@ -90,12 +90,17 @@ public class AzureBlobContainer extends AbstractBlobContainer {
         return false;
     }
 
-    private BlobInputStream openInputStream(String blobName, long position, @Nullable Long length) throws IOException {
-        return openInputStream(blobName, position, length, true);
+    private InputStream openInputStream(String blobName, long position, @Nullable Long length) throws IOException {
+        return openInputStream(blobName, position, length, true, blobStore::getInputStream);
     }
 
-    private BlobInputStream openInputStream(String blobName, long position, @Nullable Long length, boolean checkSecondaryExists)
-        throws IOException {
+    private <T extends InputStream> T openInputStream(
+        String blobName,
+        long position,
+        @Nullable Long length,
+        boolean checkSecondaryExists,
+        InputStreamOpener<T> inputStreamOpener
+    ) throws IOException {
         logger.trace("readBlob({}) from position [{}] with length [{}]", blobName, position, length != null ? length : "unlimited");
         if (checkSecondaryExists && blobStore.getLocationMode() == LocationMode.SECONDARY_ONLY && !blobExists(blobName)) {
             // On Azure, if the location path is a secondary location, and the blob does not
@@ -107,7 +112,7 @@ public class AzureBlobContainer extends AbstractBlobContainer {
             throw new NoSuchFileException("Blob [" + blobName + "] does not exist");
         }
         try {
-            return blobStore.getInputStream(buildKey(blobName), position, length);
+            return inputStreamOpener.open(buildKey(blobName), position, length);
         } catch (BlobStorageException e) {
             if (e.getStatusCode() == HttpURLConnection.HTTP_NOT_FOUND) {
                 throw new NoSuchFileException(e.getMessage());
@@ -125,13 +130,18 @@ public class AzureBlobContainer extends AbstractBlobContainer {
 
     @Override
     public InputStreamWithMetadata readBlobWithMetadata(String blobName) throws IOException {
-        final BlobInputStream inputStream = openInputStream(blobName, 0L, null, false);
+        final BlobInputStream inputStream = openInputStream(blobName, 0L, null, false, blobStore::getBlobInputStream);
         try {
             return new InputStreamWithMetadata(inputStream, AzureBlobMetadataCodec.decode(inputStream.getProperties().getMetadata()));
         } catch (IOException | RuntimeException e) {
             inputStream.close();
             throw e;
         }
+    }
+
+    @FunctionalInterface
+    private interface InputStreamOpener<T extends InputStream> {
+        T open(String blob, long position, @Nullable Long length) throws URISyntaxException, BlobStorageException;
     }
 
     @Override
