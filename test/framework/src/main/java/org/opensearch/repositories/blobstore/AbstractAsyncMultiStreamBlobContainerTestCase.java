@@ -53,6 +53,10 @@ public abstract class AbstractAsyncMultiStreamBlobContainerTestCase extends Open
         return Set.of();
     }
 
+    protected WritePriority writePriority() {
+        return WritePriority.NORMAL;
+    }
+
     @Override
     @Before
     public void setUp() throws Exception {
@@ -254,7 +258,7 @@ public abstract class AbstractAsyncMultiStreamBlobContainerTestCase extends Open
             .streamContextSupplier(source.streamContextSupplier())
             .fileSize(contents.length)
             .failIfAlreadyExists(failIfAlreadyExists)
-            .writePriority(WritePriority.HIGH)
+            .writePriority(writePriority())
             .uploadFinalizer(uploadFinalizer)
             .doRemoteDataIntegrityCheck(false)
             .metadata(metadata)
