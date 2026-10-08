@@ -180,6 +180,21 @@ public class AzureStorageService implements AutoCloseable {
     ) {
         // Retrying a conditional write after its response is lost can turn an applied write into a 412 and falsely
         // report a lost CAS. Use a dedicated one-attempt client so the caller can reconcile an ambiguous IOException.
+        return clientForPrimaryCasOperation(clientName, statsCollector);
+    }
+
+    Tuple<BlobServiceClient, Supplier<Context>> clientForVersionedRead(
+        String clientName,
+        BiConsumer<HttpRequest, HttpResponse> statsCollector
+    ) {
+        // A version token read from a replicated secondary is not valid for a primary If-Match CAS chain.
+        return clientForPrimaryCasOperation(clientName, statsCollector);
+    }
+
+    private Tuple<BlobServiceClient, Supplier<Context>> clientForPrimaryCasOperation(
+        String clientName,
+        BiConsumer<HttpRequest, HttpResponse> statsCollector
+    ) {
         return client(clientName, statsCollector, conditionalWriteClients, true);
     }
 
