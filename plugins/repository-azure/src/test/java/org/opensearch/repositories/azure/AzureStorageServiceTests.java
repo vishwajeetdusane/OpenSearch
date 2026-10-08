@@ -387,6 +387,7 @@ public class AzureStorageServiceTests extends OpenSearchTestCase {
             final ParallelTransferOptions effectiveOptions = service.getEffectiveBlobRequestOptionsForWriteBlob("azure1");
             assertThat(effectiveOptions.getBlockSizeLong(), is(ByteSizeUnit.MB.toBytes(4)));
             assertThat(effectiveOptions.getMaxSingleUploadSizeLong(), is(ByteSizeUnit.MB.toBytes(256)));
+            assertThat(effectiveOptions.getMaxConcurrency(), is(8));
         }
     }
 

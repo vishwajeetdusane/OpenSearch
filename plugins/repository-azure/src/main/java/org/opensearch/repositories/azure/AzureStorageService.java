@@ -43,9 +43,9 @@ import com.azure.core.http.policy.HttpPipelinePolicy;
 import com.azure.core.util.Configuration;
 import com.azure.core.util.Context;
 import com.azure.core.util.logging.ClientLogger;
+import com.azure.storage.blob.BlobClient;
 import com.azure.storage.blob.BlobServiceClient;
 import com.azure.storage.blob.BlobServiceClientBuilder;
-import com.azure.storage.blob.implementation.util.ModelHelper;
 import com.azure.storage.blob.models.ParallelTransferOptions;
 import com.azure.storage.blob.specialized.BlockBlobAsyncClient;
 import com.azure.storage.common.implementation.connectionstring.StorageEndpoint;
@@ -98,6 +98,8 @@ public class AzureStorageService implements AutoCloseable {
         BlockBlobAsyncClient.MAX_STAGE_BLOCK_BYTES_LONG,
         ByteSizeUnit.BYTES
     );
+
+    static final long DEFAULT_MAX_SINGLE_UPLOAD_SIZE = ByteSizeUnit.MB.toBytes(256);
 
     // 'package' for testing
     volatile Map<String, AzureStorageSettings> storageSettings = emptyMap();
@@ -384,7 +386,15 @@ public class AzureStorageService implements AutoCloseable {
     }
 
     ParallelTransferOptions getEffectiveBlobRequestOptionsForWriteBlob(String clientName) {
-        return ModelHelper.populateAndApplyDefaults(getBlobRequestOptionsForWriteBlob(clientName));
+        final AzureStorageSettings settings = getStorageSettings(clientName);
+        final long writeBlockSize = settings.getWriteBlockSize().getBytes();
+        final long maxSingleUploadSize = settings.getMaxSingleUploadSize().getBytes();
+        final int writeConcurrency = settings.getWriteConcurrency();
+        return new ParallelTransferOptions().setBlockSizeLong(
+            writeBlockSize < 0L ? (long) BlobClient.BLOB_DEFAULT_UPLOAD_BLOCK_SIZE : writeBlockSize
+        )
+            .setMaxSingleUploadSizeLong(maxSingleUploadSize < 0L ? DEFAULT_MAX_SINGLE_UPLOAD_SIZE : maxSingleUploadSize)
+            .setMaxConcurrency(writeConcurrency < 0 ? BlobClient.BLOB_DEFAULT_NUMBER_OF_BUFFERS : writeConcurrency);
     }
 
     static void validateUploadSize(
