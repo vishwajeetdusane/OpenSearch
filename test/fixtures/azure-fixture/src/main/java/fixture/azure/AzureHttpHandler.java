@@ -144,6 +144,7 @@ public class AzureHttpHandler implements HttpHandler {
                     if (error == null) {
                         committedBlob = new Blob(contents, readMetadata(exchange.getRequestHeaders()), nextETag(), Collections.emptyMap());
                         blobs.put(blobPath, committedBlob);
+                        uncommittedBlocks.remove(blobPath);
                     }
                 }
                 if (error != null) {
