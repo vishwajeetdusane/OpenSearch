@@ -35,6 +35,8 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 import com.azure.storage.blob.BlobClient;
+import com.azure.storage.blob.models.BlobErrorCode;
+import com.azure.storage.blob.models.BlobStorageException;
 import com.azure.storage.blob.models.ParallelTransferOptions;
 import com.azure.storage.common.policy.RequestRetryOptions;
 import com.azure.storage.common.policy.RetryPolicyType;
@@ -235,8 +237,38 @@ public class AzureBlobContainerRetriesTests extends OpenSearchTestCase {
     }
 
     public void testGetBlobMetadataForMissingBlob() {
+        httpServer.createContext("/container/missing_blob", exchange -> {
+            try {
+                assertEquals("HEAD", exchange.getRequestMethod());
+                exchange.getResponseHeaders().add("x-ms-error-code", BlobErrorCode.BLOB_NOT_FOUND.toString());
+                exchange.sendResponseHeaders(RestStatus.NOT_FOUND.getStatus(), -1);
+            } finally {
+                exchange.close();
+            }
+        });
+
         final BlobContainer blobContainer = createBlobContainer(between(1, 5));
         expectThrows(NoSuchFileException.class, () -> blobContainer.getBlobMetadata("missing_blob"));
+    }
+
+    public void testGetBlobMetadataForMissingContainer() {
+        httpServer.createContext("/container/blob_in_missing_container", exchange -> {
+            try {
+                assertEquals("HEAD", exchange.getRequestMethod());
+                exchange.getResponseHeaders().add("x-ms-error-code", BlobErrorCode.CONTAINER_NOT_FOUND.toString());
+                exchange.sendResponseHeaders(RestStatus.NOT_FOUND.getStatus(), -1);
+            } finally {
+                exchange.close();
+            }
+        });
+
+        final BlobContainer blobContainer = createBlobContainer(between(1, 5));
+        final IOException exception = expectThrows(
+            IOException.class,
+            () -> blobContainer.getBlobMetadata("blob_in_missing_container")
+        );
+        assertTrue(exception.getCause() instanceof BlobStorageException);
+        assertThat(((BlobStorageException) exception.getCause()).getErrorCode(), equalTo(BlobErrorCode.CONTAINER_NOT_FOUND));
     }
 
     public void testReadBlobWithRetries() throws Exception {
